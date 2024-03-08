@@ -1,6 +1,7 @@
 import socket
 import threading
 import random
+import time
 
 class SeedNode:
     def __init__(self, ip, port, n):
@@ -18,6 +19,9 @@ class SeedNode:
             if data.startswith("Dead Node"):
                 dead_node_details = data.split(":")[1:]
                 self.remove_dead_node(dead_node_details)
+            elif data.startswith("Liveness Request"):
+                sender_timestamp, sender_ip = data.split(":")[1:]
+                self.send_liveliness_reply(client_socket, sender_timestamp, sender_ip, addr[0])
             else:
                 self.register_peer(data, addr)
 
@@ -40,6 +44,14 @@ class SeedNode:
                 print(output_message)
                 print(f"Updated peer list: {self.peer_list}")
                 self.write_to_file(f"Updated peer list: {self.peer_list}")
+
+    def send_liveliness_reply(self, client_socket, sender_timestamp, sender_ip, receiver_ip):
+        # Send liveliness reply with sender timestamp, sender IP, receiver IP
+        reply_message = f"Liveness Reply:{time.time()}:{sender_timestamp}:{sender_ip}:{receiver_ip}"
+        try:
+            client_socket.send(reply_message.encode())
+        except Exception as e:
+            print(f"Error sending liveliness reply: {e}")
 
     def write_to_file(self, message):
         with open("outputfile.txt", "a") as f:

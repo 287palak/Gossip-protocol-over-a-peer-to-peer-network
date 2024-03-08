@@ -35,13 +35,20 @@ class PeerNode:
             print(f"Error connecting to peer {peer_ip}:{peer_port}: {e}")
 
     def connect_to_random_peers(self):
+        # Calculate the minimum number of peers to connect to
+        min_peers_to_connect = (len(self.seeds) // 2) + 1
+        # Determine the maximum number of peers to connect to (limited to 4)
+        num_peers_to_connect = min(min_peers_to_connect, 4)
+
         # Select a random subset of peers to connect to
-        num_peers_to_connect = random.randint(1, len(self.seeds))
+        #num_peers_to_connect = random.randint(min_peers_to_connect, max_peers_to_connect)
         selected_peers = random.sample(self.seeds, num_peers_to_connect)
-        
+
         # Connect to selected peers
         for peer_ip, peer_port in selected_peers:
             threading.Thread(target=self.connect_to_peer, args=(peer_ip, int(peer_port))).start()
+
+
 
     def send_gossip_message(self, message):
         # Create a copy of the connected_peers set to avoid modifying it during iteration
@@ -60,6 +67,21 @@ class PeerNode:
 
 
     def handle_message(self, message, sender_ip):
+    
+        # Extract the timestamp and sender IP from the message
+        _, timestamp, request_sender_ip = message.split(":")
+        reply_message = f"Liveness Reply:{timestamp}:{request_sender_ip}"
+        
+        # Send the reply message to the sender
+        try:
+            reply_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            reply_socket.connect((sender_ip, self.port))
+            reply_socket.send(reply_message.encode())
+            reply_socket.close()
+            print(f"Liveness reply sent to {sender_ip}")
+        except Exception as e:
+            print(f"Error sending liveness reply to {sender_ip}: {e}")
+    
         # Check if message has been received before
         message_hash = hashlib.sha256(message.encode()).hexdigest()
         if message_hash not in self.ml:
@@ -80,32 +102,42 @@ class PeerNode:
             with open("outputfile.txt", "a") as f:
                 f.write(f"Received message: {message} from {sender_ip}\n")
             print(f"Received message: {message} from {sender_ip}")
+
     
     def liveness_check(self):
         while True:
-            time.sleep(2)  # Check liveness every 13 seconds
+            time.sleep(13)  # Check liveness every 13 seconds
             # Perform liveness check for connected peers
             print("Performing Liveliness check")
             with self.lock:
-                for peer_ip, peer_port in self.connected_peers:
-                    print("Looping in connected_peers:")
-                    try:
-                        peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        peer_socket.connect((peer_ip, peer_port))
-                        peer_socket.send(f"Liveness Request:{time.time()}:{self.ip}".encode())
-                        reply = peer_socket.recv(1024).decode()
-                        if reply.startswith("Liveness Reply"):
-                            print(f"Liveness reply received from {peer_ip}:{peer_port}")
-                            self.liveness_counter = 0  # Reset liveness counter
-                        peer_socket.close()
-                    except Exception as e:
-                        print(f"Error checking liveness of peer {peer_ip}:{peer_port}: {e}")
-                        # Handle dead node - notify seeds and remove from connected peers
-                        self.handle_dead_node(peer_ip, peer_port)
+                for peer_ip, peer_port in self.seeds:
+                    print("Looping in all connected peers:")
+                    print(self.connected_peers)
+                    print(peer_ip, " ", peer_port)
+                    
+                    if (peer_ip, peer_port) in self.connected_peers:
+                        try:
+                            peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            peer_socket.connect((peer_ip, peer_port))
+                            peer_socket.send(f"Liveness Request:{time.time()}:{self.ip}".encode())
+                            reply = peer_socket.recv(1024).decode()
+                            print(reply)
+                            if reply.startswith("Liveness Reply"):
+                                print(f"Liveness reply received from {peer_ip}:{peer_port}")
+                                self.liveness_counter = 0  # Reset liveness counter
+                            peer_socket.close()
+                        
+                        except Exception as e:
+                            print(f"Error checking liveness of peer {peer_ip}:{peer_port}: {e}")
+                            # Handle dead node - notify seeds and remove from connected peers
+                            self.handle_dead_node(peer_ip, peer_port)
+                        
+                    else:
+                        print("Node not connected")
                         
 
     def handle_dead_node(self, dead_ip, dead_port):
-        with self.lock:
+        # with self.lock:
             if (dead_ip, dead_port) in self.connected_peers:
                 self.connected_peers.remove((dead_ip, dead_port))
                 print("Removed Dead Node ", dead_ip, ":", dead_port)
@@ -114,10 +146,12 @@ class PeerNode:
                     threading.Thread(target=self.notify_seed_dead_node, args=(seed_ip, seed_port, dead_ip, dead_port)).start()
                 # Increment liveness counter
                 self.liveness_counter += 1
+                print(self.liveness_counter)
                 # Output dead node message
                 if self.liveness_counter >= 3:
                     message = f"Dead Node:{dead_ip}:{dead_port}:{time.time()}:{self.ip}"
                     self.send_dead_node_message(message)
+
 
     def notify_seed_dead_node(self, seed_ip, seed_port, dead_ip, dead_port):
         seed_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -130,22 +164,22 @@ class PeerNode:
 
     def send_dead_node_message(self, message):
         # Broadcast dead node message to all seeds
-        with self.lock:
-            for seed_ip, seed_port in self.seeds:
-                try:
-                    seed_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    seed_socket.connect((seed_ip, seed_port))
-                    seed_socket.send(message.encode())
-                    seed_socket.close()
-                except Exception as e:
-                    print(f"Error sending dead node message to seed node {seed_ip}:{seed_port}: {e}")
+        print("Removed Dead node")
+        #with self.lock:
+        for seed_ip, seed_port in self.seeds:
+            try:
+                seed_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                seed_socket.connect((seed_ip, seed_port))
+                seed_socket.send(message.encode())
+                seed_socket.close()
+            except Exception as e:
+                print(f"Error sending dead node message to seed node {seed_ip}:{seed_port}: {e}")
 
     def start(self):
         # Connect to seed nodes to get information about other peers
         for seed_ip, seed_port in self.seeds:
             threading.Thread(target=self.connect_to_seed, args=(seed_ip, int(seed_port))).start()
 
-        # Connect to a randomly chosen subset of other peers
         self.connect_to_random_peers()
 
         # Start liveness check thread
@@ -157,12 +191,6 @@ class PeerNode:
             self.send_gossip_message(message)
             time.sleep(5)  # Generate message every 5 seconds
 
-
-# if __name__ == "__main__":
-#     # Specify the IP address and port number for the peer node
-#     # Specify the list of seed nodes [(seed_ip1, seed_port1), (seed_ip2, seed_port2), ...]
-#     peer = PeerNode("127.0.0.1", 12345, [("127.0.0.1", 9999), ("127.0.0.1", 8888)])
-#     peer.start()
     
 if __name__ == "__main__":
     # Read seed node addresses from config.csv file
