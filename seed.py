@@ -1,85 +1,67 @@
 import socket
 import threading
+import random
 
-MY_IP = "0.0.0.0"                                               # IP for listening
-PORT = int(input())                                             # Port No. for listening               
-peer_list = []                                                  # List to store connected Peers            
+class SeedNode:
+    def __init__(self, ip, port, n):
+        self.ip = ip
+        self.port = port
+        self.peer_list = {}
+        self.lock = threading.Lock()
+        self.num_seeds = n
 
-# Write the outputs to the file
-def write_output_to_file(output):
-    try:
-        file = open("outputseed.txt", "a")  
-        file.write(output + "\n") 
-    except:
-        print("Write Failed")
-    finally:
-        file.close()
+    def handle_connection(self, client_socket, addr):
+        while True:
+            data = client_socket.recv(1024).decode()
+            if not data:
+                break
+            if data.startswith("Dead Node"):
+                dead_node_details = data.split(":")[1:]
+                self.remove_dead_node(dead_node_details)
+            else:
+                self.register_peer(data, addr)
 
-# Create socket to connect 2 computers
-def create_socket():
-    try:
-        global socket
-        socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    except:
-        print("Socket Creation Error")
+    def register_peer(self, peer_details, addr):
+        with self.lock:
+            self.peer_list[addr] = peer_details
+        output_message = f"Peer {peer_details} registered with seed."
+        self.write_to_file(output_message)
+        print(output_message)
+        print(f"Updated peer list: {self.peer_list}")
+        self.write_to_file(f"Updated peer list: {self.peer_list}")
 
-# Bind socket
-def bind_socket():
-    try:
-        global socket
-        ADDRESS = (MY_IP, PORT)
-        socket.bind(ADDRESS)
-    except:
-        print("Socket Binding Error")
-        bind_socket()
+    def remove_dead_node(self, dead_node_details):
+        ip, port = dead_node_details[:2]
+        with self.lock:
+            if (ip, int(port)) in self.peer_list:
+                del self.peer_list[(ip, int(port))]
+                output_message = f"Removed dead node {ip}:{port}"
+                self.write_to_file(output_message)
+                print(output_message)
+                print(f"Updated peer list: {self.peer_list}")
+                self.write_to_file(f"Updated peer list: {self.peer_list}")
 
-# It take list of connected peer and convert it to comma separated string to send it through socket
-def list_to_string(peer_list):  
-    PeerList = ","  
-    for i in peer_list:  
-        PeerList += i + ","    
-    return PeerList  
+    def write_to_file(self, message):
+        with open("outputfile.txt", "a") as f:
+            f.write(message + "\n")
 
-# Take the dead node message, find address of dead node from it and remove it from peer list if present
-def remove_dead_node(message):
-    print(message)
-    write_output_to_file(message)
-    message = message.split(":")
-    dead_node = str(message[1]) + ":" + str(message[2])
-    if dead_node in peer_list:
-        peer_list.remove(dead_node)
+    def start(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((self.ip, self.port))
+        server_socket.listen(5)
+        output_message = f"Seed node started at {self.ip}:{self.port}"
+        self.write_to_file(output_message)
+        print(output_message)
 
-# To handle different peers in threads.It receives peer address from peer and add it to its peer list
-# If it receives dead node message then pass it remove_dead_node()
-def handle_peer(conn, addr):
-    while True:
-        try:
-            message = conn.recv(1024).decode('utf-8')      
-            if message:
-                if "Dead Node" in message[0:9]:
-                    remove_dead_node(message)
-                else:
-                    message = message.split(":")
-                    peer_list.append(str(addr[0])+":"+str(message[1]))
-                    output = "Received Connection from " + str(addr[0])+":"+str(message[1])
-                    print(output)
-                    write_output_to_file(output)
-                    PeerList = list_to_string(peer_list)
-                    conn.send(PeerList.encode('utf-8'))
-        except:
-            break
-    conn.close()
+        while True:
+            client_socket, addr = server_socket.accept()
+            threading.Thread(target=self.handle_connection, args=(client_socket, addr)).start()
 
-# To listen at a particular port and create thread for each peer  
-def begin():
-    socket.listen(5)
-    print("Seed is Listening")
-    while True:
-        conn, addr = socket.accept()
-        socket.setblocking(1)
-        thread = threading.Thread(target=handle_peer, args=(conn,addr))
-        thread.start()
-        
-create_socket()
-bind_socket()
-begin()
+if __name__ == "__main__":
+    with open("config.csv", "r") as f:
+        seed_nodes = []
+        for line in f:
+            ip, port = line.strip().split(",")
+            seed_node = SeedNode(ip, int(port), len(seed_nodes))
+            seed_nodes.append(seed_node)
+            threading.Thread(target=seed_node.start).start()
